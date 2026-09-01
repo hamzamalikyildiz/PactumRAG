@@ -1,0 +1,27 @@
+# Virtual Environment
+venv/
+.venv/
+contract-rag/venv/
+env/
+ENV/
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Local SQLite Database & Artifacts
+documents.db
+*.db-journal
+
+# OS Specific
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE & Editor
+.vscode/
+.idea/
+.gemini/
