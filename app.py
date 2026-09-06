@@ -11,6 +11,7 @@ import re
 import sqlite3
 import time
 from typing import Any, Dict, List, Optional, Tuple
+import zlib
 
 import numpy as np
 from pydantic import BaseModel, Field
@@ -207,16 +208,17 @@ class FoundryLocalEmbeddingEngine:
                     for idx in range(start_idx, end_idx):
                         vec[idx] += 1.8
 
-        # 2. Kelime Bazlı Hash Dağıtımı
+        # 2. Kelime Bazlı Hash Dağıtımı (zlib.crc32 ile Süreç Bağımsız Determinizm)
         for w in words:
-            h = hash(w)
+            h = zlib.crc32(w.encode("utf-8"))
             vec[abs(h) % self.vector_dim] += 1.0
             vec[abs(h // 13) % self.vector_dim] += 0.5
 
         # 3. Karakter 3-Gram Hash Dağıtımı
         for i in range(len(clean_text) - 2):
             trigram = clean_text[i:i+3]
-            vec[abs(hash(trigram)) % self.vector_dim] += 0.25
+            h_tri = zlib.crc32(trigram.encode("utf-8"))
+            vec[abs(h_tri) % self.vector_dim] += 0.25
 
         # 4. L2 Normalizasyonu
         norm = np.linalg.norm(vec)
