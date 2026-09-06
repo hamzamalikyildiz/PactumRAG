@@ -113,6 +113,8 @@ def get_embedding_engine() -> LocalEmbeddingEngine:
 
 
 def cosine_similarity(v1: List[float], v2: List[float]) -> float:
+    if not v1 or not v2 or len(v1) != len(v2):
+        return 0.0
     a = np.array(v1, dtype=np.float32)
     b = np.array(v2, dtype=np.float32)
     norm_a = np.linalg.norm(a)
@@ -120,6 +122,28 @@ def cosine_similarity(v1: List[float], v2: List[float]) -> float:
     if norm_a == 0 or norm_b == 0:
         return 0.0
     return float(np.dot(a, b) / (norm_a * norm_b))
+
+
+def sync_database_embeddings(engine: LocalEmbeddingEngine):
+    """
+    Eski veya farklı boyuttaki (örneğin 128 boyutlu eski sahte vektörler) kayıtları
+    yeni 384 boyutlu sinirsel model ile otomatik olarak günceller.
+    """
+    chunks = fetch_all_chunks()
+    if not chunks:
+        return
+    needs_reindex = any(len(c["embedding"]) != engine.vector_dim for c in chunks)
+    if needs_reindex:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            for c in chunks:
+                if len(c["embedding"]) != engine.vector_dim:
+                    new_emb = engine.get_embedding(f"{c['madde_no']}: {c['content']}")
+                    cursor.execute(
+                        "UPDATE contract_chunks SET embedding = ? WHERE id = ?",
+                        (json.dumps(new_emb), c["id"])
+                    )
+            conn.commit()
 
 
 # ==============================================================================
@@ -494,6 +518,7 @@ def main():
 
     init_database()
     engine = get_embedding_engine()
+    sync_database_embeddings(engine)
 
     # CSS ve Chat Baloncuk Animasyonları
     st.markdown("""
