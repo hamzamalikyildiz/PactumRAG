@@ -460,10 +460,11 @@ class ChallengerAgent:
         )
         cross_refs = [primary_madde] + [f"Madde {r}" for r in found_madde_refs]
 
-        # 2. Kısıtlayıcı Hukuki Terimlerin Taranması
+        # 2. Kısıtlayıcı Hukuki Terimlerin Taranması (ancak, saklıdır, uyarınca, taahhüt süresi vb.)
         legal_qualifiers = [
-            "taahhüt", "cezai şart", "ceza", "tazminat", "kalan ayların", "indirim",
-            "istisna", "ancak", "saklı", "tahsil", "yükümlü", "asgari", "fatura", "şart"
+            "ancak", "saklıdır", "saklı", "uyarınca", "taahhüt süresi", "taahhüt",
+            "cezai şart", "ceza", "tazminat", "cayma bedeli", "cayma", "kalan ayların",
+            "indirim", "istisna", "tahsil", "yükümlü", "asgari", "fatura", "şart"
         ]
         detected_terms = [kw for kw in legal_qualifiers if kw in primary_content.lower() or kw in query.lower()]
 
@@ -472,8 +473,8 @@ class ChallengerAgent:
 
         hop2_chunks = []
         if needs_hop2:
-            # 2. Hop için özel hedeflenmiş alt sorgu inşası
-            sub_query = f"{query} {primary_madde} taahhüt cezai şart tazminat istisna kalan aylar"
+            # 2. Hop için özel hedeflenmiş alt sorgu inşası (taahhüt süresi, cezai şart, cayma bedeli vb.)
+            sub_query = f"{query} {primary_madde} taahhüt süresi cezai şart cayma bedeli istisna ancak saklıdır uyarınca kalan aylar"
             hop2_chunks = retrieve_hop_2(
                 sub_query=sub_query,
                 engine=engine,
@@ -489,7 +490,7 @@ class ChallengerAgent:
 
             assessment = ChallengerAssessment(
                 needs_second_hop=True,
-                reason="Proposer'ın mütalaası tekil maddeye dayanmaktadır. Sözleşmede taahhüt süresi ve cezai şart istisnası tespit edilmiştir.",
+                reason="Proposer'ın mütalaası tekil maddeye dayanmaktadır. Sözleşmede taahhüt süresi, ancak/saklıdır kısıtlamaları ve cezai şart istisnası tespit edilmiştir.",
                 sub_query=sub_query,
                 detected_terms=list(set(detected_terms + detected_in_hop2))
             )
@@ -539,6 +540,7 @@ class JudgeAgent:
     Nihai Hakem Ajanı:
     Proposer ve Challenger delillerini sentezler, risk analizi yapar
     ve Pydantic JudgeVerdict formatında kesin hükmü açıklar.
+    Responsible AI prensibi: Belgede yeterli dayanak yoksa kesinlikle varsayımda bulunmaz.
     """
     @staticmethod
     def evaluate(
@@ -551,9 +553,36 @@ class JudgeAgent:
         sayfalar = sorted(list(set(c["sayfa_no"] for c in all_evidence)))
         full_text = " ".join([c.get("content", "") for c in all_evidence]).lower()
 
+        # Responsible AI Güvencesi: Eğer belgedeki benzerlik skoru aşırı düşükse varsayım yapılmaz
+        max_score = max([c.get("score", 0.0) for c in all_evidence]) if all_evidence else 0.0
+        if max_score < 0.20:
+            verdict = JudgeVerdict(
+                karar="BELGEDE YETERLİ BİLGİ BULUNAMADI (SORUMLU YAPAY ZEKA - VARSAYIMDA BULUNULAMAZ)",
+                guven_skoru=25,
+                gerekce=(
+                    "Sözleşme veritabanında yönelttiğiniz soruyla doğrudan veya dolaylı olarak örtüşen yeterli bir madde bulunamamıştır. "
+                    "Responsible AI prensipleri gereğince belgede yer almayan konularda varsayım veya halüsinasyon üretilmemektedir."
+                ),
+                dayanak_maddeler=[],
+                sayfa_referanslari=[],
+                risk_var_mi=False
+            )
+            thought = "Soru ile sözleşme maddeleri arasında güvenilir bir bağ kurulamadı. Responsible AI uyarınca varsayımsız ret üretildi."
+            msg = ChatMessage(
+                role="judge",
+                agent_name="Judge Agent (Baş Hukuk Hakemi)",
+                avatar="⚖️",
+                content=f"### ⚖️ NİHAİ DENETÇİ HÜKMÜ\n\n**HÜKÜM:** {verdict.karar}\n\n**Gerekçe:** {verdict.gerekce}",
+                thought=thought,
+                action_tool="responsible_ai_guard",
+                tool_output="Yetersiz veri nedeniyle varsayımsız yanıt verildi.",
+                metadata=verdict.model_dump()
+            )
+            return msg, verdict
+
         risk_keywords = [
             "cezai şart", "taahhüt", "tazminat", "kalan ayların", "faiz",
-            "tahsil", "indirimler", "sorumluluk", "ihlal"
+            "tahsil", "indirimler", "sorumluluk", "ihlal", "cayma bedeli"
         ]
         detected_risks = [k for k in risk_keywords if k in full_text]
         risk_var_mi = len(detected_risks) > 0
