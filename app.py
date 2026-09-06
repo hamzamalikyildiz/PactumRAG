@@ -1025,9 +1025,11 @@ def main():
     # --------------------------------------------------------------------------
     with st.sidebar:
         st.markdown("### 🎛️ Belge & Motor Yönetimi")
+        emb_display = getattr(engine, "engine_name", "NumPy Semantik Fallback (128-D)")
+        llm_display = getattr(engine, "llm_name", "Yerel Hukuki Sentez Motoru (Phi-3.5 Çevrimdışı Fallback)")
         st.info(
-            f"🧠 **Embedding Motoru:**\n`{engine.engine_name}`\n\n"
-            f"🤖 **Yerel Model (LLM):**\n`{engine.llm_name}`\n\n"
+            f"🧠 **Embedding Motoru:**\n`{emb_display}`\n\n"
+            f"🤖 **Yerel Model (LLM):**\n`{llm_display}`\n\n"
             f"🔒 **Çevrimdışı Güvenlik:** %100 Yerel / Sıfır Dış API"
         )
         st.divider()
