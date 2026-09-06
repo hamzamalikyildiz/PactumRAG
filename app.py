@@ -148,15 +148,19 @@ class JudgeVerdict(BaseModel):
 
 class FoundryLocalEmbeddingEngine:
     """
-    Microsoft Foundry Local SDK tabanlı yerel gömme motoru.
-    SDK veya model aktif değilse %100 deterministik ve semantik ağırlıklı
+    Microsoft Foundry Local SDK tabanlı yerel gömme ve çıkarım motoru.
+    SDK üzerinden yerel modelleri (Phi-3.5 Mini ve yerel embedding'ler) koşturur.
+    SDK veya model ağırlıkları aktif değilse %100 çevrimdışı, deterministik ve semantik ağırlıklı
     NumPy fallback vektör üreticisine otomatik düşer. Dış API kesinlikle çağrılmaz.
     """
     def __init__(self, vector_dim: int = VECTOR_DIM):
         self.vector_dim = vector_dim
         self.is_foundry_active = False
+        self.is_phi_active = False
         self.engine_name = "NumPy Semantik Fallback (128-D)"
+        self.llm_name = "Yerel Hukuki Sentez Motoru (Phi-3.5 Çevrimdışı Fallback)"
         self._session = None
+        self._llm_session = None
         self._init_engine()
 
     def _init_engine(self):
@@ -171,9 +175,17 @@ class FoundryLocalEmbeddingEngine:
                 self._session = fl.EmbeddingsSession(model)
                 self.is_foundry_active = True
                 self.engine_name = "Microsoft Foundry Local SDK (qwen3-embedding)"
+
+            phi_model = cat.get_model("phi-3.5-mini-instruct") or cat.get_model("phi-3.5-mini")
+            if phi_model and getattr(phi_model, "is_loaded", False):
+                self._llm_session = fl.ChatSession(phi_model)
+                self.is_phi_active = True
+                self.llm_name = "Microsoft Foundry Local (Phi-3.5 Mini)"
         except Exception:
             self.is_foundry_active = False
+            self.is_phi_active = False
             self.engine_name = "NumPy Semantik Fallback (128-D)"
+            self.llm_name = "Yerel Hukuki Sentez Motoru (Phi-3.5 Çevrimdışı Fallback)"
 
     def get_embedding(self, text: str) -> List[float]:
         if not text or not text.strip():
@@ -1005,7 +1017,11 @@ def main():
     # --------------------------------------------------------------------------
     with st.sidebar:
         st.markdown("### 🎛️ Belge & Motor Yönetimi")
-        st.info(f"🧠 **Aktif Motor:**\n`{engine.engine_name}`\n\n🔒 **Mimari:** %100 Yerel / Sıfır Dış API")
+        st.info(
+            f"🧠 **Embedding Motoru:**\n`{engine.engine_name}`\n\n"
+            f"🤖 **Yerel Model (LLM):**\n`{engine.llm_name}`\n\n"
+            f"🔒 **Çevrimdışı Güvenlik:** %100 Yerel / Sıfır Dış API"
+        )
         st.divider()
 
         sb_tab1, sb_tab2 = st.tabs(["📄 PDF Yükle", "✍️ Özel Madde Ekle"])
