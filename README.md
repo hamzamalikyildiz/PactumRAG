@@ -96,13 +96,17 @@ Arayüzde tek tıkla test edilebilen veya serbest metin kutusundan sorgulanabile
 ### Çalıştırma Adımları
 
 ```bash
-# 1. Proje dizinine gidin
-cd "MICROSOFT RAG PROJECT"
+# 1. Depoyu klonlayın ve proje dizinine gidin
+git clone https://github.com/hamzamalikyildiz/PactumRAG.git
+cd PactumRAG
 
-# 2. Sanal ortamı aktif edin (Windows PowerShell)
+# 2. Sanal ortamı aktif edin (veya oluşturun)
 .\contract-rag\venv\Scripts\Activate.ps1
 
-# 3. Streamlit arayüzünü başlatın
+# 3. Bağımlılıkları yükleyin (İlk kurulumda)
+pip install streamlit pydantic pypdf numpy
+
+# 4. Streamlit arayüzünü başlatın
 streamlit run app.py
 ```
 
