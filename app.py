@@ -588,9 +588,25 @@ class JudgeAgent:
         risk_var_mi = len(detected_risks) > 0
         is_multi_clause = len(all_evidence) > 1
 
+        # Dinamik Matematiksel Güven Skoru Hesabı:
+        # Metin kosinüs benzerliği (%40) + 2. Hop istisna uyumu (%30) + Çapraz atıf doğrulaması (%20) + Risk kapsamı (%10)
+        h1_score = all_evidence[0].get("score", 0.0) if all_evidence else 0.0
+        h2_scores = [c.get("score", 0.0) for c in all_evidence[1:]] if len(all_evidence) > 1 else []
+        top_h2 = max(h2_scores) if h2_scores else (h1_score * 0.75)
+        has_direct_ref = any(c.get("is_direct_ref", False) for c in all_evidence)
+        cross_ref_weight = 0.95 if has_direct_ref else (0.80 if h2_scores else 0.60)
+        risk_coverage = min(len(detected_risks) * 0.20 + 0.40, 1.0)
+
+        raw_confidence = (
+            (h1_score * 0.40) +
+            (top_h2 * 0.30) +
+            (cross_ref_weight * 0.20) +
+            (risk_coverage * 0.10)
+        ) * 100
+        guven_skoru = int(np.clip(round(raw_confidence), 35, 96))
+
         if risk_var_mi and is_multi_clause:
             karar = "TALEBİNİZ KOŞULLU VE RİSKLİ (SÖZLEŞME İSTİSNALARI VE CEZAİ HÜKÜMLER GEÇERLİDİR)"
-            guven_skoru = 98
             gerekce = (
                 f"Proposer'ın dayandığı {all_evidence[0]['madde_no']} hükmü fesih bildirimi hakkı tanımakla birlikte; "
                 f"Challenger tarafından ortaya konan {', '.join([c['madde_no'] for c in all_evidence[1:]])} hükümleri uyarınca "
@@ -599,14 +615,12 @@ class JudgeAgent:
             )
         elif is_multi_clause:
             karar = "TALEBİNİZ İLGİLİ MADDELERİN BİRLİKTE UYGULANMASINI GEREKTİRMEKTEDİR"
-            guven_skoru = 92
             gerekce = (
                 f"İncelenen {', '.join(maddeler)} maddeleri birlikte değerlendirilmiştir. "
                 f"Sözleşmedeki usul ve bildirim sürelerine riayet edilmesi zorunludur."
             )
         else:
             karar = "TALEP DOĞRUDAN UYGULANABİLİR (EK ENGEL VEYA CEZAİ ŞART BULUNMAMAKTADIR)"
-            guven_skoru = 88
             gerekce = (
                 f"{maddeler[0]} hükmü kapsamında talep doğrudan karşılanabilir niteliktedir; "
                 f"sözleşmede hakkı kısıtlayan cezai bir kayıt bulunmamaktadır."
@@ -928,19 +942,22 @@ def main():
             st.metric(
                 label="Güven Skoru",
                 value=f"%{verdict.guven_skoru}",
-                delta="Yüksek Doğruluk" if verdict.guven_skoru >= 90 else "Orta"
+                delta="Yüksek Doğruluk" if verdict.guven_skoru >= 85 else ("Orta" if verdict.guven_skoru >= 60 else "Düşük"),
+                help="Sorgunun maddelerle anlamsal kosinüs benzerliği (%40), 2. Hop istisna maddesi uyumu (%30), doğrudan çapraz atıf doğrulaması (%20) ve tespit edilen hukuki kısıtlayıcı risklerin kapsamının (%10) dinamik matematiksel sentezidir."
             )
             hop_count = 2 if len(st.session_state.evidence_chunks) > 1 else 1
             st.metric(
                 label="Hop Sayısı",
                 value=f"{hop_count} Hop",
-                delta="Multi-Hop Aktif" if hop_count > 1 else "Tekil"
+                delta="Multi-Hop Aktif" if hop_count > 1 else "Tekil",
+                help="Arama derinliği kademesidir. 1 Hop: Yalnızca sorunun doğrudan karşılığı olan ilk maddeye bakar (naif RAG). 2 Hop: İlk maddedeki kısıtlama, taahhüt ve cezai şart atıflarını takip ederek gizli istisnaları zincirleme olarak ortaya çıkarır (Multi-Hop RAG)."
             )
             st.metric(
                 label="Risk Değerlendirmesi",
                 value="YÜKSEK RİSK" if verdict.risk_var_mi else "DÜŞÜK RİSK",
                 delta="Cezai Şart Mevcut" if verdict.risk_var_mi else "Doğrudan Uygulanabilir",
-                delta_color="inverse" if verdict.risk_var_mi else "normal"
+                delta_color="inverse" if verdict.risk_var_mi else "normal",
+                help="Sözleşme maddelerinde cezai şart, taahhüt süresi ihlali, tazminat veya mali yaptırım riski tespit edilip edilmediğini gösterir."
             )
 
         st.divider()
@@ -953,7 +970,11 @@ def main():
                     st.markdown(f"**{idx}. Delil:** `{c['madde_no']}` *(Sayfa {c['sayfa_no']})*")
                     st.info(f"\"{c['content']}\"")
                 with col_c2:
-                    st.metric("Benzerlik Skoru", f"%{c.get('score', 0.0)*100:.1f}")
+                    st.metric(
+                        "Benzerlik Skoru",
+                        f"%{c.get('score', 0.0)*100:.1f}",
+                        help="Kullanıcı sorgusu ile bu madde metni arasındaki anlamsal kosinüs benzerliği açısıdır (%0-%100). Klasik anahtar kelime aramasından farklı olarak, farklı kelimelerle ifade edilmiş olsa bile hukuki anlam uyumunu ölçer."
+                    )
                     st.caption(f"Arama Kademesi: {c.get('hop', 1)}. Hop")
                 st.divider()
 
