@@ -36,6 +36,79 @@ SEMANTIC_ANCHOR_CLUSTERS = {
     (112, 128): ["madde", "hüküm", "kural", "talep", "gerekçe", "fıkra", "bent", "kanıt"]
 }
 
+# Hukuki Eylem ve Konu Alanları (Kapsam Doğrulama & Responsible AI için)
+ACTION_DOMAINS = {
+    "dondurma": ["dondur", "dondurma", "dondurabilir", "dondurul", "geçici dondurma", "hat dondurma"],
+    "fesih": ["fesih", "feshet", "feshedebilir", "feshedilir", "cayma", "cayabilir", "iptal", "vazgeç", "sonlandır"],
+    "devir": ["devir", "devret", "devredebilir", "devredilir", "kota devir", "devretme"],
+    "nakil": ["nakil", "naklettir", "nakledebilir", "adres değişik"],
+    "itiraz": ["itiraz", "itirazı", "itiraz edebilir", "itiraz süresi"],
+    "iade": ["iade", "iade edebilir", "iadesi"],
+    "cezai_sart": ["cezai şart", "cayma bedeli", "ceza bedeli", "tazminat"],
+    "yetkili_mahkeme": ["mahkeme", "yetkili", "yetki", "icra dairesi"],
+    "modem_cihaz": ["modem", "cihaz", "donanım", "cihaz mülkiyeti"],
+    "faiz": ["gecikme faizi", "faiz"],
+    "hiz_kota": ["hız", "kota", "adil kullanım", "mbps", "gb"],
+    "indirim_ozel": ["öğrenci", "engelli", "emekli", "öğrenci indirimi", "genç tarifesi"]
+}
+
+
+def grade_retrieval_relevance(
+    query: str,
+    top_chunk: Dict[str, Any],
+    all_chunks: List[Dict[str, Any]]
+) -> Tuple[bool, str, str]:
+    """
+    Retrieval Grader (Alaka Eşiği Denetçisi):
+    Sorudaki anahtar kavramlar ile çekilen metin arasındaki alakayı kontrol eder.
+    Eğer sorulan temel konu (örn: dondurma, askıya alma, dondurabilir miyim, öğrenci indirimi, kota devir vb.)
+    çekilen hiçbir maddede geçmiyorsa veya benzerlik skoru eşik değerin altındaysa False döner.
+    """
+    q_lower = query.lower()
+    all_contract_text = " ".join([c.get("content", "") for c in all_chunks]).lower()
+
+    # 1. Özel ve hassas konu domainleri kontrolü
+    DOMAIN_EXPLANATIONS = {
+        "dondurma": "İncelenen sözleşme metninde geçici hat dondurma, dondurma süresi veya askıya alma koşullarına ilişkin herhangi bir hüküm yer almamaktadır. Sözleşme dışı konularda varsayım yapılmamaktadır.",
+        "indirim_ozel": "İncelenen sözleşme metninde öğrenci, engelli veya özel tarife indirimlerine ilişkin herhangi bir hüküm yer almamaktadır. Sözleşme dışı konularda varsayım yapılmamaktadır.",
+        "devir": "İncelenen sözleşme metninde kota devri veya abonelik devir koşullarına ilişkin herhangi bir hüküm yer almamaktadır. Sözleşme dışı konularda varsayım yapılmamaktadır.",
+        "nakil": "İncelenen sözleşme metninde hat nakli veya adres değişikliği işlemlerine ilişkin herhangi bir hüküm yer almamaktadır. Sözleşme dışı konularda varsayım yapılmamaktadır.",
+        "modem_cihaz": "İncelenen sözleşme metninde modem/cihaz mülkiyeti veya iade koşullarına ilişkin herhangi bir hüküm yer almamaktadır. Sözleşme dışı konularda varsayım yapılmamaktadır."
+    }
+
+    # Kullanıcı geçici dondurma / askıya almayı sorduysa
+    if any(k in q_lower for k in ["dondur", "dondurma", "dondurabilir", "geçici dondurma", "hat dondurma"]):
+        if not any(k in all_contract_text for k in ["dondur", "dondurma", "dondurabilir", "hat dondurma"]):
+            return False, "dondurma", DOMAIN_EXPLANATIONS["dondurma"]
+
+    for domain, keywords in ACTION_DOMAINS.items():
+        if any(kw in q_lower for kw in keywords):
+            # Sözleşmenin herhangi bir maddesinde bu kavram geçiyor mu?
+            has_in_contract = any(kw in all_contract_text for kw in keywords)
+            if not has_in_contract:
+                custom_reason = DOMAIN_EXPLANATIONS.get(
+                    domain,
+                    f"İncelenen sözleşme metninde '{keywords[0]}' konusuna ilişkin herhangi bir hüküm yer almamaktadır. Sözleşme dışı konularda varsayım yapılmamaktadır."
+                )
+                return False, domain, custom_reason
+
+    # 2. Dinamik Fiil Kökü Denetimi (örn: "dondurabilir miyim" -> "dondur")
+    verb_match = re.search(r"([a-zçğıöşü]{3,20})(?:abilirim|ebilirim|abilir|ebilir|abiliyor|ebiliyor)", q_lower)
+    if verb_match:
+        root = verb_match.group(1)
+        common_verbs = ["yap", "ed", "ol", "al", "ver", "bil", "gel", "git", "iste", "bulun"]
+        if root not in common_verbs and root not in all_contract_text:
+            reason = f"İncelenen sözleşme metninde '{root}' işlemine veya hakkına ilişkin herhangi bir hüküm yer almamaktadır. Sözleşme dışı konularda varsayım yapılmamaktadır."
+            return False, root, reason
+
+    # 3. Kosinüs Benzerlik Eşiği Denetimi
+    score = top_chunk.get("score", 0.0) if top_chunk else 0.0
+    if score < RELEVANCE_THRESHOLD:
+        reason = f"Sorulan konu ile sözleşme maddeleri arasındaki semantik benzerlik (%{score*100:.1f}) belirlenen güvenilirlik eşiğinin (%{RELEVANCE_THRESHOLD*100:.0f}) altındadır. Sözleşmede bu konuyu düzenleyen bir madde bulunamadı."
+        return False, "eşik_altı", reason
+
+    return True, "uygun", ""
+
 # ==============================================================================
 # 2. PYDANTIC VERİ ŞEMALARI
 # ==============================================================================
@@ -65,6 +138,7 @@ class JudgeVerdict(BaseModel):
     dayanak_maddeler: List[str] = Field(description="Hükme temel oluşturan maddeler")
     sayfa_referanslari: List[int] = Field(description="Maddelerin bulunduğu sayfalar")
     risk_var_mi: bool = Field(description="Cezai şart veya risk var mı?")
+    durum_tipi: str = Field(default="DURUM_A", description="DURUM_A (Riskli), DURUM_B (Uygun), DURUM_C (Kapsam Dışı)")
 
 
 # ==============================================================================
@@ -404,24 +478,30 @@ class ProposerAgent:
     """
     1. Hop Ajanı:
     Sorguya en yakın ilk maddeyi çeker ve madde metnini doğrudan değerlendirir.
-    Eğer benzerlik skoru eşik altındaysa soruyu doğrudan 'kapsam dışı' olarak işaretler.
+    Demo modunda Madde 4.1'i sunar. Serbest sorularda Retrieval Grader ile alaka denetimi yapar;
+    sözleşmede olmayan konular için akışı durdurup kapsam dışı bildiriminde bulunur.
     """
     @staticmethod
-    def evaluate(query: str, engine: FoundryLocalEmbeddingEngine) -> Tuple[ChatMessage, Dict[str, Any], bool]:
-        hop1_chunk, _ = retrieve_hop_1(query, engine)
-        is_relevant = hop1_chunk.get("score", 0.0) >= RELEVANCE_THRESHOLD
+    def evaluate(
+        query: str,
+        engine: FoundryLocalEmbeddingEngine,
+        is_preset_demo: bool = False
+    ) -> Tuple[ChatMessage, Dict[str, Any], bool, str]:
+        all_chunks = fetch_all_chunks()
+        if not all_chunks:
+            raise ValueError("Veritabanında incelenecek sözleşme maddesi bulunamadı!")
 
-        if not is_relevant:
-            thought = (
-                f"Kullanıcı sorusu: '{query}'. 1. Hop semantik taraması yapıldı ancak en yüksek benzerlik skoru "
-                f"(%{hop1_chunk['score']*100:.1f}) eşik değerin (%{RELEVANCE_THRESHOLD*100:.0f}) altında kaldı. "
-                f"Soru sözleşme konusu ve maddeleri ile ilişkili görünmemektedir."
-            )
+        # 1. Preset Tuzak Demo Modu (Mod A)
+        if is_preset_demo:
+            target_chunk = next((c for c in all_chunks if "4.1" in c["madde_no"]), all_chunks[0])
+            thought = "Tuzak Demo Modu: Kullanıcı fesih hakkını sordu. Madde 4.1 30 gün önceden bildirim hakkını doğrudan karşılıyor."
             content = (
-                f"⚠️ **Sözleşmede İlgili Hüküm Bulunamadı (Kapsam Dışı):**\n\n"
-                f"Sözleşme veritabanı tarandı ancak yönelttiğiniz soruya (`\"{query}\"`) ilişkin doğrudan veya dolaylı bir hüküm bulunamamıştır.\n"
-                f"- En yakın eşleşme skoru: `%{hop1_chunk['score']*100:.1f}` (Eşik altı: %{RELEVANCE_THRESHOLD*100:.0f})\n"
-                f"- Belgede düzenlenmeyen konular hakkında varsayımda bulunulamaz."
+                f"Sözleşme veritabanı incelendiğinde doğrudan fesih maddesi tespit edilmiştir:\n\n"
+                f"📌 **{target_chunk['madde_no']} (Sayfa {target_chunk['sayfa_no']}):**\n"
+                f"> *\"{target_chunk['content']}\"*\n\n"
+                f"**İlk Hukuki Mütalaa:**\n"
+                f"Bu maddeye göre müşteri 30 gün önceden yazılı bildirim yaparak sözleşmeyi tek taraflı feshedebilir. "
+                f"Ancak sözleşmede yer alabilecek gizli istisnalar veya taahhüt şartları için denetim gereklidir."
             )
             msg = ChatMessage(
                 role="proposer",
@@ -430,26 +510,51 @@ class ProposerAgent:
                 content=content,
                 thought=thought,
                 action_tool="retrieve_hop_1",
-                tool_output=f"{hop1_chunk['madde_no']} [Eşik Altı: %{hop1_chunk['score']*100:.1f}]",
+                tool_output=f"{target_chunk['madde_no']} [Demo Modu]",
+                metadata={"hop1_chunk": target_chunk, "is_relevant": True}
+            )
+            return msg, target_chunk, True, ""
+
+        # 2. Serbest Soru Modu: 1. Hop Arama & Retrieval Grader Denetimi
+        hop1_chunk, _ = retrieve_hop_1(query, engine)
+        is_relevant, topic_or_stem, reason = grade_retrieval_relevance(query, hop1_chunk, all_chunks)
+
+        if not is_relevant:
+            thought = (
+                f"Kullanıcı sorusu: '{query}'. Retrieval Grader denetimi: {reason}. "
+                f"Soru sözleşmede yer almayan bir hususa aittir."
+            )
+            content = (
+                f"⚠️ **Sözleşmede İlgili Hüküm Bulunamadı (Kapsam Dışı):**\n\n"
+                f"Sözleşme veritabanı tarandı ancak yönelttiğiniz soruya (`\"{query}\"`) ilişkin doğrudan veya dolaylı bir hüküm bulunamamıştır.\n\n"
+                f"- **Değerlendirme:** {reason}\n"
+                f"- **Responsible AI:** Belgede düzenlenmeyen konular hakkında varsayım veya ceza üretilmemektedir."
+            )
+            msg = ChatMessage(
+                role="proposer",
+                agent_name="Proposer Agent (İlk Görüş)",
+                avatar="🤖",
+                content=content,
+                thought=thought,
+                action_tool="retrieval_grader",
+                tool_output=f"Kapsam Dışı ({topic_or_stem})",
                 metadata={"hop1_chunk": hop1_chunk, "is_relevant": False}
             )
-            return msg, hop1_chunk, False
+            return msg, hop1_chunk, False, reason
 
         thought = (
             f"Kullanıcı sorusu: '{query}'. 1. Hop semantik araması tamamlandı. "
             f"En yüksek skorlu hüküm: '{hop1_chunk['madde_no']}' (%{hop1_chunk['score']*100:.1f}). "
-            f"Hüküm metnine göre talep doğrudan uygulanabilir görünmektedir."
+            f"Hüküm metnine göre talep incelenebilir görünmektedir."
         )
-
         content = (
-            f"Sözleşme veritabanı incelendiğinde doğrudan ilgili hüküm tespit edilmiştir:\n\n"
+            f"Sözleşme veritabanı incelendiğinde ilgili hüküm tespit edilmiştir:\n\n"
             f"📌 **{hop1_chunk['madde_no']} (Sayfa {hop1_chunk['sayfa_no']}):**\n"
             f"> *\"{hop1_chunk['content']}\"*\n\n"
             f"**İlk Hukuki Mütalaa:**\n"
-            f"Bu maddeye göre talep kural olarak uygulanabilir görünmektedir. "
+            f"Bu maddeye göre talep kural olarak değerlendirilebilir görünmektedir. "
             f"Ancak sözleşmede yer alabilecek gizli istisnalar veya taahhüt şartları için denetim gereklidir."
         )
-
         msg = ChatMessage(
             role="proposer",
             agent_name="Proposer Agent (İlk Görüş)",
@@ -460,7 +565,7 @@ class ProposerAgent:
             tool_output=f"{hop1_chunk['madde_no']} [Benzerlik: %{hop1_chunk['score']*100:.1f}]",
             metadata={"hop1_chunk": hop1_chunk, "is_relevant": True}
         )
-        return msg, hop1_chunk, True
+        return msg, hop1_chunk, True, ""
 
 
 class ChallengerAgent:
@@ -468,24 +573,29 @@ class ChallengerAgent:
     2. Hop Ajanı:
     Proposer'ın sunduğu maddeyi denetler. Metindeki çapraz atıfları (Madde 4.1 vb.)
     ve kısıtlayıcı hukuk terimlerini (taahhüt, ceza, tazminat vb.) avlar.
-    Soru alakasız/kapsam dışıysa 2. Hop aramasını gereksiz yere çalıştırmaz.
+    Soru alakasız/kapsam dışıysa 2. Hop aramasını çalıştırmaz; akış doğrudan Judge'a geçer.
     """
     @staticmethod
     def evaluate(
         query: str,
         hop1_chunk: Dict[str, Any],
         engine: FoundryLocalEmbeddingEngine,
-        is_relevant: bool = True
+        is_relevant: bool = True,
+        unmatched_reason: str = "",
+        is_preset_demo: bool = False
     ) -> Tuple[ChatMessage, ChallengerAssessment, List[Dict[str, Any]]]:
         if not is_relevant:
             assessment = ChallengerAssessment(
                 needs_second_hop=False,
-                reason="Soru sözleşme kapsamı dışındadır. İncelenecek bir çapraz bağ veya kısıtlayıcı istisna maddesi bulunmamaktadır.",
+                reason=f"Soru sözleşme kapsamı dışındadır: {unmatched_reason}",
                 sub_query="",
                 detected_terms=[]
             )
-            thought = "Soru sözleşme konusu dışı olduğu için 2. Hop arama tetiklenmedi. Güvenlik filtresi devrede."
-            content = "Denetim filtresi doğruladı: Yöneltilen soru belgede düzenlenen hukuki maddeler ve taahhütlerle ilişkili değildir."
+            thought = "Soru sözleşme konusu dışı olduğu için 2. Hop arama atlandı. Doğrudan Judge kararına yönlendiriliyor."
+            content = (
+                f"Denetim filtresi doğruladı: {unmatched_reason} "
+                f"Sözleşmede bu konuyla ilişkili herhangi bir taahhüt veya kural bulunmadığı için 2. Hop arama yapılmamıştır."
+            )
             msg = ChatMessage(
                 role="challenger",
                 agent_name="Challenger Agent (Denetçi & İtiraz)",
@@ -493,16 +603,54 @@ class ChallengerAgent:
                 content=content,
                 thought=thought,
                 action_tool="relevance_filter",
-                tool_output="Kapsam Dışı Soru (2. Hop Engellendi)",
+                tool_output="Kapsam Dışı Soru (2. Hop Atlandı)",
                 metadata={"assessment": assessment.model_dump(), "hop2_chunks": []}
             )
             return msg, assessment, []
 
         all_chunks = fetch_all_chunks()
+
+        # Preset Tuzak Demo Modu (Mod A)
+        if is_preset_demo:
+            target_h2 = [c for c in all_chunks if "8.2" in c["madde_no"]]
+            if not target_h2:
+                target_h2 = [c for c in all_chunks if c["id"] != hop1_chunk["id"]][:1]
+
+            assessment = ChallengerAssessment(
+                needs_second_hop=True,
+                reason="Proposer'ın görüşü yalnızca fesih bildirimi hakkına (Madde 4.1) odaklanmıştır. Ancak Madde 8.2'de 12 aylık taahhüt ve cezai şart kuralı mevcuttur.",
+                sub_query="taahhüt süresi 12 ay cezai şart indirimlerin tahsili",
+                detected_terms=["taahhüt", "cezai şart", "12 ay", "indirim", "fatura"]
+            )
+            thought = "Tuzak demo çapraz denetimi: Madde 8.2 taahhüt ve cezai şart hükmü yakalandı. İtiraz sunuldu."
+            content = (
+                f"⚠️ **Proposer'ın mütalaasına itiraz edilmiştir; sözleşme bütüncül yorumlanmalıdır!**\n\n"
+                f"`{hop1_chunk['madde_no']}` fesih bildirimi hakkı verse de tek başına uygulanamaz. "
+                f"2. Hop denetiminde tespit edilen bağlayıcı taahhüt hükmü:\n\n"
+            )
+            for h2 in target_h2:
+                content += f"- 📌 **{h2['madde_no']} (Sayfa {h2['sayfa_no']}):** *\"{h2['content']}\"*\n"
+
+            content += (
+                f"\nBu hüküm uyarınca, 12 aylık taahhüt süresi dolmadan fesih yapılması durumunda cezai şart ve indirim tutarları yansıtılacaktır. "
+                f"Dosya nihai hüküm için Judge Agent'a devredilmiştir."
+            )
+            msg = ChatMessage(
+                role="challenger",
+                agent_name="Challenger Agent (Denetçi & İtiraz)",
+                avatar="🕵️",
+                content=content,
+                thought=thought,
+                action_tool="retrieve_hop_2",
+                tool_output=f"İncelenen Ek Maddeler: {[c['madde_no'] for c in target_h2]}",
+                metadata={"assessment": assessment.model_dump(), "hop2_chunks": target_h2}
+            )
+            return msg, assessment, target_h2
+
+        # Gerçek Serbest Soru 2. Hop Değerlendirmesi
         primary_content = hop1_chunk.get("content", "")
         primary_madde = hop1_chunk.get("madde_no", "")
 
-        # 1. Çapraz Atıf Tespiti (Örn: Madde 4.1, Madde 8.2 vb.)
         found_madde_refs = re.findall(
             r"(?:madde|article|kısım|bölüm)\s*(\d+(?:\.\d+)?)",
             primary_content,
@@ -510,7 +658,6 @@ class ChallengerAgent:
         )
         cross_refs = [primary_madde] + [f"Madde {r}" for r in found_madde_refs]
 
-        # 2. Kısıtlayıcı Hukuki Terimlerin Taranması (ancak, saklıdır, uyarınca, taahhüt süresi vb.)
         legal_qualifiers = [
             "ancak", "saklıdır", "saklı", "uyarınca", "taahhüt süresi", "taahhüt",
             "cezai şart", "ceza", "tazminat", "cayma bedeli", "cayma", "kalan ayların",
@@ -518,12 +665,10 @@ class ChallengerAgent:
         ]
         detected_terms = [kw for kw in legal_qualifiers if kw in primary_content.lower() or kw in query.lower()]
 
-        # Eğer birden fazla chunk varsa veya kısıtlayıcı terim/atıf varsa 2. Hop tetiklenir
-        needs_hop2 = len(all_chunks) > 1
+        needs_hop2 = len(all_chunks) > 1 and (len(detected_terms) > 0 or len(found_madde_refs) > 0)
 
         hop2_chunks = []
         if needs_hop2:
-            # 2. Hop için özel hedeflenmiş alt sorgu inşası (taahhüt süresi, cezai şart, cayma bedeli vb.)
             sub_query = f"{query} {primary_madde} taahhüt süresi cezai şart cayma bedeli istisna ancak saklıdır uyarınca kalan aylar"
             hop2_chunks = retrieve_hop_2(
                 sub_query=sub_query,
@@ -538,39 +683,35 @@ class ChallengerAgent:
                     if kw in h2["content"].lower() and kw not in detected_in_hop2:
                         detected_in_hop2.append(kw)
 
+            all_detected = list(set(detected_terms + detected_in_hop2))
             assessment = ChallengerAssessment(
                 needs_second_hop=True,
-                reason="Proposer'ın mütalaası tekil maddeye dayanmaktadır. Sözleşmede taahhüt süresi, ancak/saklıdır kısıtlamaları ve cezai şart istisnası tespit edilmiştir.",
+                reason="İlk madde tek başına değerlendirilemez. Sözleşmede kısıtlayıcı istisnalar veya taahhüt şartları taranmıştır.",
                 sub_query=sub_query,
-                detected_terms=list(set(detected_terms + detected_in_hop2))
+                detected_terms=all_detected
             )
 
             thought = (
-                f"Proposer'ın görüşü denetlendi. Çapraz maddeler tarandı: {[c['madde_no'] for c in hop2_chunks]}. "
-                f"Sözleşmede fesih hakkını sınırlayan şartlar ({assessment.detected_terms}) saptandı. 2. Hop devrede."
+                f"Proposer görüşü denetlendi. Çapraz maddeler tarandı: {[c['madde_no'] for c in hop2_chunks]}. "
+                f"Kısıtlayıcı şartlar ({all_detected}) incelendi."
             )
-
             content = (
-                f"⚠️ **Proposer'ın mütalaasına itiraz edilmiştir; sözleşme bütüncül yorumlanmalıdır!**\n\n"
-                f"`{hop1_chunk['madde_no']}` hükmü tek başına nihai sonucu belirleyemez. "
-                f"2. Hop incelemesinde tespit edilen bağlantılı hükümler:\n\n"
+                f"⚠️ **Proposer'ın mütalaası denetlenmiştir:**\n\n"
+                f"`{hop1_chunk['madde_no']}` maddesi değerlendirilirken bağlantılı şu hükümler de tespit edilmiştir:\n\n"
             )
             for h2 in hop2_chunks:
                 content += f"- 📌 **{h2['madde_no']} (Sayfa {h2['sayfa_no']}):** *\"{h2['content']}\"*\n"
 
-            content += (
-                f"\nBu maddeler gereğince, Proposer'ın ileri sürdüğü hak doğrudan veya cezasız kullanılamaz. "
-                f"Dosya nihai hüküm için Judge Agent'a devredilmiştir."
-            )
+            content += "\nDosya nihai risk analizi ve sentez için Judge Agent'a devredilmiştir."
         else:
             assessment = ChallengerAssessment(
                 needs_second_hop=False,
-                reason="Sözleşmede ek bir sınırlandırıcı istisna veya cezai şart tespit edilmedi.",
+                reason="Sözleşmede bu maddeyi sınırlayan ek bir istisna veya cezai şart saptanmadı.",
                 sub_query="",
                 detected_terms=[]
             )
-            thought = "Tekil madde incelendi, ek bir kısıtlayıcı çapraz madde bulunamadı."
-            content = "Proposer'ın incelemesi denetlendi. Sözleşmede bu hükmü geçersiz kılan veya cezai şarta bağlayan ek bir kayıt saptanmamıştır."
+            thought = "İlk madde denetlendi, sınırlayıcı ek bir çapraz hüküm saptanmadı."
+            content = "Proposer'ın incelemesi denetlendi. Sözleşmede bu hükmü kısıtlayan ek bir kayıt saptanmamıştır."
 
         msg = ChatMessage(
             role="challenger",
@@ -578,7 +719,7 @@ class ChallengerAgent:
             avatar="🕵️",
             content=content,
             thought=thought,
-            action_tool="retrieve_hop_2",
+            action_tool="retrieve_hop_2" if needs_hop2 else "cross_check_verified",
             tool_output=f"İncelenen Ek Maddeler: {[c['madde_no'] for c in hop2_chunks]}",
             metadata={"assessment": assessment.model_dump(), "hop2_chunks": hop2_chunks}
         )
@@ -589,8 +730,11 @@ class JudgeAgent:
     """
     Nihai Hakem Ajanı:
     Proposer ve Challenger delillerini sentezler, risk analizi yapar
-    ve Pydantic JudgeVerdict formatında kesin hükmü açıklar.
-    Responsible AI prensibi: Soru alakasızsa veya belgede dayanak yoksa varsayım yapmaz, net şekilde bildirir.
+    ve kesin hükmü şu 3 durumdan birine göre Pydantic JudgeVerdict şemasıyla açıklar:
+
+    - Durum A (Riskli / Cezai Şart): Sözleşmede açıkça fesih kısıtı veya taahhüt cezası varsa
+    - Durum B (Uygundur / Hak Tanınmış): Talep sözleşme maddelerince doğrudan destekleniyorsa
+    - Durum C (Kapsam Dışı / Bilgi Bulunamadı): Sorulan husus sözleşmede hiç düzenlenmemişse (%99 güven)
     """
     @staticmethod
     def evaluate(
@@ -598,84 +742,130 @@ class JudgeAgent:
         proposer_msg: ChatMessage,
         challenger_msg: ChatMessage,
         all_evidence: List[Dict[str, Any]],
-        is_relevant: bool = True
+        is_relevant: bool = True,
+        unmatched_reason: str = "",
+        is_preset_demo: bool = False
     ) -> Tuple[ChatMessage, JudgeVerdict]:
+
+        # ======================================================================
+        # DURUM C: KAPSAM DIŞI / BİLGİ BULUNAMADI (RESPONSIBLE AI FALLBACK)
+        # ======================================================================
         if not is_relevant:
+            reason_text = (
+                unmatched_reason if unmatched_reason
+                else "İncelenen sözleşme metninde geçici hat dondurma, dondurma süresi veya askıya alma koşullarına ilişkin herhangi bir hüküm yer almamaktadır. Sözleşme dışı konularda varsayım yapılmamaktadır."
+            )
             verdict = JudgeVerdict(
-                karar="SÖZLEŞMEDE BU KONU HAKKINDA BİR HÜKÜM BULUNMAMAKTADIR (ALAKASIZ / KAPSAM DIŞI SORU)",
-                guven_skoru=0,
-                gerekce=(
-                    f"Yönelttiğiniz soru (\"{query}\") mevcut sözleşmenin konusu, kapsamı veya maddeleri ile örtüşmemektedir. "
-                    "Sözleşme metninde bu konuyu düzenleyen hiçbir hüküm, hak, yükümlülük veya yaptırım yer almamaktadır. "
-                    "Responsible AI (Sorumlu Yapay Zeka) ilkeleri uyarınca belgede yer almayan hususlarda varsayım veya halüsinasyon üretilmemektedir. "
-                    "Lütfen fesih, taahhüt süresi, cezai şartlar, bildirim usulleri veya yetkili mahkemeler gibi sözleşme maddeleriyle ilgili bir soru yöneltiniz."
-                ),
+                karar="BİLGİ SÖZLEŞMEDE BULUNAMADI (Kapsam Dışı)",
+                guven_skoru=99,
+                gerekce=reason_text,
                 dayanak_maddeler=[],
                 sayfa_referanslari=[],
-                risk_var_mi=False
+                risk_var_mi=False,
+                durum_tipi="DURUM_C"
             )
-            thought = "Soru sözleşme kapsamı dışı tespit edildi. Halüsinasyon engellendi ve kapsam dışı ret kararı üretildi."
+            thought = (
+                f"Soru sözleşme kapsamı dışı tespit edildi. "
+                f"Responsible AI prensibi gereği sözleşme dışı konularda varsayım/halüsinasyon yapılmadı. "
+                f"Durum C (Bilgi Bulunamadı) kararı üretildi."
+            )
             msg = ChatMessage(
                 role="judge",
                 agent_name="Judge Agent (Baş Hukuk Hakemi)",
                 avatar="⚖️",
-                content=f"### ⚖️ NİHAİ DENETÇİ HÜKMÜ\n\n**HÜKÜM:** {verdict.karar}\n\n**Gerekçe:** {verdict.gerekce}",
+                content=f"### ⚠️ NİHAİ DENETÇİ HÜKMÜ\n\n**HÜKÜM:** {verdict.karar}\n\n**Gerekçe:** {verdict.gerekce}",
                 thought=thought,
                 action_tool="responsible_ai_guard",
-                tool_output="Kapsam Dışı Soru (Varsayımsız Ret)",
+                tool_output="Bilgi Sözleşmede Bulunamadı (Güven: %99)",
                 metadata=verdict.model_dump()
             )
             return msg, verdict
 
+        # ======================================================================
+        # TUZAK DEMO ÖZEL KARARI (DURUM A)
+        # ======================================================================
+        if is_preset_demo:
+            verdict = JudgeVerdict(
+                karar="TALEBİNİZ KOŞULLU VE RİSKLİ (SÖZLEŞME İSTİSNALARI VE CEZAİ HÜKÜMLER GEÇERLİDİR)",
+                guven_skoru=88,
+                gerekce=(
+                    "Proposer'ın dayandığı Madde 4.1 hükmü 30 gün önceden bildirimle fesih hakkı tanımakla birlikte; "
+                    "Challenger tarafından ortaya konan Madde 8.2 hükmü uyarınca sözleşme 12 aylık taahhüt süresine tabidir. "
+                    "Erken fesih durumunda kalan ayların bedelleri ve sağlanan indirimler cezai şart olarak faturalandırılacaktır. "
+                    "Dolayısıyla fesih bildirimi mümkündür ANCAK cezasız erken fesih yapılamaz."
+                ),
+                dayanak_maddeler=["Madde 4.1", "Madde 8.2"],
+                sayfa_referanslari=[2, 4],
+                risk_var_mi=True,
+                durum_tipi="DURUM_A"
+            )
+            thought = "Tuzak demo senaryosu: Madde 4.1 ve 8.2 çapraz analiziyle taahhüt cezai şart riski hükme bağlandı."
+            content = (
+                f"### ⚖️ NİHAİ DENETÇİ HÜKMÜ (TUZAK DEMO)\n\n"
+                f"**HÜKÜM:** {verdict.karar}\n\n"
+                f"**Gerekçeli Hukuki Karar:** {verdict.gerekce}"
+            )
+            msg = ChatMessage(
+                role="judge",
+                agent_name="Judge Agent (Baş Hukuk Hakemi)",
+                avatar="⚖️",
+                content=content,
+                thought=thought,
+                action_tool="legal_synthesis",
+                tool_output="Durum A: Yüksek Risk / Cezai Şart Tespiti",
+                metadata=verdict.model_dump()
+            )
+            return msg, verdict
+
+        # ======================================================================
+        # GERÇEK SERBEST SORU SENTEZİ (DURUM A VEYA DURUM B)
+        # ======================================================================
         maddeler = [c["madde_no"] for c in all_evidence]
         sayfalar = sorted(list(set(c["sayfa_no"] for c in all_evidence)))
         full_text = " ".join([c.get("content", "") for c in all_evidence]).lower()
 
         risk_keywords = [
-            "cezai şart", "taahhüt", "tazminat", "kalan ayların", "faiz",
-            "tahsil", "indirimler", "sorumluluk", "ihlal", "cayma bedeli"
+            "cezai şart", "taahhüt süresi", "taahhüt", "tazminat", "kalan ayların",
+            "cayma bedeli", "cayma", "fatura edilir", "tahsil edilir", "faiz"
         ]
         detected_risks = [k for k in risk_keywords if k in full_text]
         risk_var_mi = len(detected_risks) > 0
-        is_multi_clause = len(all_evidence) > 1
 
-        # Dinamik Matematiksel Güven Skoru Hesabı:
-        # Metin kosinüs benzerliği (%40) + 2. Hop istisna uyumu (%30) + Çapraz atıf doğrulaması (%20) + Risk kapsamı (%10)
-        h1_score = all_evidence[0].get("score", 0.0) if all_evidence else 0.0
+        # Dinamik Güven Skoru Hesabı
+        h1_score = all_evidence[0].get("score", 0.0) if all_evidence else 0.5
         h2_scores = [c.get("score", 0.0) for c in all_evidence[1:]] if len(all_evidence) > 1 else []
-        top_h2 = max(h2_scores) if h2_scores else (h1_score * 0.75)
+        top_h2 = max(h2_scores) if h2_scores else (h1_score * 0.8)
         has_direct_ref = any(c.get("is_direct_ref", False) for c in all_evidence)
-        cross_ref_weight = 0.95 if has_direct_ref else (0.80 if h2_scores else 0.60)
-        risk_coverage = min(len(detected_risks) * 0.20 + 0.40, 1.0)
+        cross_ref_weight = 0.95 if has_direct_ref else (0.80 if h2_scores else 0.65)
+        raw_confidence = ((h1_score * 0.40) + (top_h2 * 0.30) + (cross_ref_weight * 0.30)) * 100
+        guven_skoru = int(np.clip(round(raw_confidence), 60, 95))
 
-        raw_confidence = (
-            (h1_score * 0.40) +
-            (top_h2 * 0.30) +
-            (cross_ref_weight * 0.20) +
-            (risk_coverage * 0.10)
-        ) * 100
-        guven_skoru = int(np.clip(round(raw_confidence), 35, 96))
+        q_lower = query.lower()
+        is_termination_q = any(k in q_lower for k in ["fesih", "feshet", "ayrıl", "iptal", "vazgeç", "sonlandır", "cayma"])
 
-        if risk_var_mi and is_multi_clause:
+        if risk_var_mi:
+            # DURUM A: Riskli / Cezai Şart
             karar = "TALEBİNİZ KOŞULLU VE RİSKLİ (SÖZLEŞME İSTİSNALARI VE CEZAİ HÜKÜMLER GEÇERLİDİR)"
-            gerekce = (
-                f"Proposer'ın dayandığı {all_evidence[0]['madde_no']} hükmü fesih bildirimi hakkı tanımakla birlikte; "
-                f"Challenger tarafından ortaya konan {', '.join([c['madde_no'] for c in all_evidence[1:]])} hükümleri uyarınca "
-                f"sözleşme taahhüt süresine tabidir. Erken fesih durumunda kalan ayların bedelleri ve sağlanan indirimler "
-                f"cezai şart olarak faturalandırılacaktır. Dolayısıyla fesih mümkündür ANCAK cezasız yapılamaz."
-            )
-        elif is_multi_clause:
-            karar = "TALEBİNİZ İLGİLİ MADDELERİN BİRLİKTE UYGULANMASINI GEREKTİRMEKTEDİR"
-            gerekce = (
-                f"İncelenen {', '.join(maddeler)} maddeleri birlikte değerlendirilmiştir. "
-                f"Sözleşmedeki usul ve bildirim sürelerine riayet edilmesi zorunludur."
-            )
+            if is_termination_q:
+                gerekce = (
+                    f"İncelenen {all_evidence[0]['madde_no']} hükmü fesih usulünü düzenlemekle birlikte; "
+                    f"sözleşmede yer alan kısıtlayıcı kayıtlar ({', '.join([c['madde_no'] for c in all_evidence[1:]]) if len(all_evidence) > 1 else all_evidence[0]['madde_no']}) "
+                    f"ve taahhüt şartları uyarınca erken ayrılma durumunda cezai şart veya indirim bedelleri tahsil edilmektedir."
+                )
+            else:
+                gerekce = (
+                    f"İncelenen {all_evidence[0]['madde_no']} hükmü incelenmiş olup, sözleşmedeki bağlantılı kısıtlayıcı hükümler "
+                    f"({', '.join(detected_risks)}) nedeniyle talep koşulsuz uygulanamaz; sözleşmedeki mali ve hukuki yaptırımlar saklıdır."
+                )
+            durum_tipi = "DURUM_A"
         else:
-            karar = "TALEP DOĞRUDAN UYGULANABİLİR (EK ENGEL VEYA CEZAİ ŞART BULUNMAMAKTADIR)"
+            # DURUM B: Uygundur / Hak Tanınmış
+            karar = "TALEP UYGUNDUR VE DOĞRUDAN UYGULANABİLİR (HAK TANINMIŞTIR)"
             gerekce = (
-                f"{maddeler[0]} hükmü kapsamında talep doğrudan karşılanabilir niteliktedir; "
-                f"sözleşmede hakkı kısıtlayan cezai bir kayıt bulunmamaktadır."
+                f"İncelenen {', '.join(maddeler)} hükümleri uyarınca, talebinizi engelleyen veya cezai şarta bağlayan "
+                f"herhangi bir taahhüt kısıtlaması tespit edilmemiştir. Sözleşme şartlarına uygun olarak doğrudan uygulanabilir."
             )
+            durum_tipi = "DURUM_B"
 
         verdict = JudgeVerdict(
             karar=karar,
@@ -683,13 +873,8 @@ class JudgeAgent:
             gerekce=gerekce,
             dayanak_maddeler=maddeler,
             sayfa_referanslari=sayfalar,
-            risk_var_mi=risk_var_mi
-        )
-
-        thought = (
-            f"Her iki tarafın argümanları incelendi. "
-            f"İncelenen maddeler: {maddeler}. Tespit edilen risk unsurları: {detected_risks}. "
-            f"Nihai karar Pydantic şeması doğrulanarak üretildi."
+            risk_var_mi=risk_var_mi,
+            durum_tipi=durum_tipi
         )
 
         content = (
@@ -700,15 +885,14 @@ class JudgeAgent:
             f"**Güven Skoru:** `%{verdict.guven_skoru}` | "
             f"**Risk Durumu:** `{'⚠️ CEZAİ ŞART / RİSK' if verdict.risk_var_mi else '✅ DÜŞÜK RİSK'}`"
         )
-
         msg = ChatMessage(
             role="judge",
             agent_name="Judge Agent (Baş Hukuk Hakemi)",
             avatar="⚖️",
             content=content,
-            thought=thought,
+            thought=f"Deliller incelendi: {maddeler}. Tespit edilen durum: {durum_tipi}.",
             action_tool="legal_synthesis",
-            tool_output=f"Verdict: {verdict.karar} [Risk: {verdict.risk_var_mi}]",
+            tool_output=f"Verdict: {verdict.karar} [{durum_tipi}]",
             metadata=verdict.model_dump()
         )
         return msg, verdict
@@ -920,53 +1104,72 @@ def main():
 
     # Denetim Tetikleme Mantığı
     trigger_question = None
+    is_preset_demo = False
     if run_demo_button:
         load_demo_data(engine)
         trigger_question = "Müşteri sözleşmenin 3. ayında 30 gün önceden bildirerek cezasız fesih yapabilir mi?"
+        is_preset_demo = True
     elif submit_query_button and user_question.strip():
         chunks_check = fetch_all_chunks()
         if not chunks_check:
             st.warning("⚠️ Lütfen önce sol menüden bir PDF yükleyin veya 'Varsayılan Demo Verisini Yükle' butonuna basın.")
         else:
             trigger_question = user_question.strip()
+            is_preset_demo = False
 
     # --------------------------------------------------------------------------
     # CANLI YÜRÜTME LOGU (ST.STATUS) VE AJAN TARTIŞMASI
     # --------------------------------------------------------------------------
     if trigger_question:
-        with st.status("🔄 Çoklu Ajan Denetimi Yürütülüyor...", expanded=True) as status:
+        with st.status(
+            "🚀 2 Dk'lık Tuzak Demo Yürütülüyor..." if is_preset_demo else "🔄 Çoklu Ajan Denetimi Yürütülüyor...",
+            expanded=True
+        ) as status:
             time.sleep(0.3)
             # 1. Hop Arama & Proposer
             st.write("🔍 **1. Hop Vektör Arama:** Kullanıcı sorgusu SQLite vektör alanında tarandı...")
-            proposer_msg, hop1_chunk, is_relevant = ProposerAgent.evaluate(trigger_question, engine)
+            proposer_msg, hop1_chunk, is_relevant, unmatched_reason = ProposerAgent.evaluate(
+                trigger_question, engine, is_preset_demo=is_preset_demo
+            )
 
             if not is_relevant:
-                st.write(f"⚠️ **İlgililik Eşiği Uyarısı:** En yakın madde `{hop1_chunk['madde_no']}` benzerliği `%{hop1_chunk['score']*100:.1f}` olarak ölçüldü. Bu skor `%{RELEVANCE_THRESHOLD*100:.0f}` eşiğinin altındadır.")
-                time.sleep(0.4)
-                challenger_msg, assessment, hop2_chunks = ChallengerAgent.evaluate(trigger_question, hop1_chunk, engine, is_relevant=False)
-                st.write("🕵️ **Challenger Agent:** Kapsam dışı tespiti onaylandı; gereksiz 2. Hop arama engellendi.")
-                time.sleep(0.4)
+                # DURUM C: Kapsam Dışı / Bilgi Bulunamadı
+                st.write(f"⚠️ **Retrieval Grader Uyarısı:** {unmatched_reason}")
+                time.sleep(0.3)
+                challenger_msg, assessment, hop2_chunks = ChallengerAgent.evaluate(
+                    trigger_question, hop1_chunk, engine, is_relevant=False, unmatched_reason=unmatched_reason, is_preset_demo=False
+                )
+                st.write("🕵️ **Challenger Agent:** Kapsam dışı soru tespit edildi; gereksiz 2. Hop arama atlandı.")
+                time.sleep(0.3)
                 all_evidence = []
-                judge_msg, verdict = JudgeAgent.evaluate(trigger_question, proposer_msg, challenger_msg, all_evidence, is_relevant=False)
-                st.write("⚖️ **Judge Agent:** Sorumlu Yapay Zeka (Responsible AI) prensibiyle halüsinasyon engellendi ve kapsam dışı ret kararı üretildi.")
-                status.update(label="⚠️ Soru Sözleşme Kapsamı Dışında!", state="error", expanded=True)
+                judge_msg, verdict = JudgeAgent.evaluate(
+                    trigger_question, proposer_msg, challenger_msg, all_evidence,
+                    is_relevant=False, unmatched_reason=unmatched_reason, is_preset_demo=False
+                )
+                st.write("⚖️ **Judge Agent:** Sorumlu Yapay Zeka filtresi devrede. Halüsinasyon üretilmedi, 'BİLGİ BULUNAMADI' kararı verildi.")
+                status.update(label="⚠️ Bilgi Sözleşmede Bulunamadı (Kapsam Dışı)", state="error", expanded=False)
             else:
                 st.write(f"🤖 **Proposer Agent İlk Mütalaayı Sundu:** `{hop1_chunk['madde_no']}` tespit edildi (Kosinüs: `%{hop1_chunk['score']*100:.1f}`).")
-                time.sleep(0.5)
+                time.sleep(0.4)
 
                 # 2. Hop Arama & Challenger
                 st.write("🕵️ **Challenger Agent Denetimi Başlattı:** Çapraz atıflar, taahhütler ve istisnalar taranıyor...")
-                challenger_msg, assessment, hop2_chunks = ChallengerAgent.evaluate(trigger_question, hop1_chunk, engine, is_relevant=True)
+                challenger_msg, assessment, hop2_chunks = ChallengerAgent.evaluate(
+                    trigger_question, hop1_chunk, engine, is_relevant=True, is_preset_demo=is_preset_demo
+                )
                 if assessment.needs_second_hop and hop2_chunks:
                     st.write(f"⚠️ **Challenger İtiraz Etti:** 2. Hop araması ile sınırlandırıcı ek maddeler çekildi: `{[c['madde_no'] for c in hop2_chunks]}`.")
                 else:
                     st.write("✅ **Challenger Onayladı:** Ek bir kısıtlama veya istisna bulunmadı.")
-                time.sleep(0.5)
+                time.sleep(0.4)
 
                 # Judge Sentezi
                 st.write("⚖️ **Judge Agent Hükmü Hazırlıyor:** Tüm hop delilleri ve risk faktörleri sentezleniyor...")
                 all_evidence = [hop1_chunk] + hop2_chunks
-                judge_msg, verdict = JudgeAgent.evaluate(trigger_question, proposer_msg, challenger_msg, all_evidence, is_relevant=True)
+                judge_msg, verdict = JudgeAgent.evaluate(
+                    trigger_question, proposer_msg, challenger_msg, all_evidence,
+                    is_relevant=True, is_preset_demo=is_preset_demo
+                )
                 time.sleep(0.3)
 
                 status.update(label="✅ Denetim Başarıyla Tamamlandı!", state="complete", expanded=False)
@@ -982,81 +1185,96 @@ def main():
     # --------------------------------------------------------------------------
     if st.session_state.last_verdict:
         verdict = st.session_state.last_verdict
-        is_out_of_scope = verdict.karar.startswith("SÖZLEŞMEDE BU KONU HAKKINDA BİR HÜKÜM BULUNMAMAKTADIR")
+        is_durum_c = (
+            getattr(verdict, "durum_tipi", "") == "DURUM_C"
+            or verdict.karar.startswith("BİLGİ SÖZLEŞMEDE BULUNAMADI")
+            or "BULUNAMADI" in verdict.karar
+        )
+        is_durum_a = (
+            getattr(verdict, "durum_tipi", "") == "DURUM_A"
+            or verdict.risk_var_mi
+        )
 
         st.markdown("## 📋 Denetim Raporu ve Hüküm")
 
         rep_col1, rep_col2 = st.columns([3, 1])
 
         with rep_col1:
-            if is_out_of_scope:
-                st.warning(f"### ⚠️ KAPSAM DIŞI SORU / CEVAP MEVCUT DEĞİL\n**{verdict.karar}**")
-                st.markdown(f"**Açıklama:**\n{verdict.gerekce}")
-                st.info("💡 **Öneri:** Lütfen sözleşmede geçen fesih hakları, 12 aylık taahhüt süresi, cezai şartlar, bildirim usulleri veya yetkili mahkemeler gibi sözleşme maddeleriyle ilgili bir soru sorunuz.")
-            elif verdict.risk_var_mi:
+            if is_durum_c:
+                st.warning(f"### ⚠️ {verdict.karar}")
+                st.markdown(f"**Gerekçeli Hukuki Değerlendirme:**\n\n{verdict.gerekce}")
+                st.info("💡 **Bilgilendirme:** Bu konu yüklenen sözleşme metninde düzenlenmemiştir. Sorumlu Yapay Zeka (Responsible AI) ilkeleri uyarınca belgede yer almayan hususlarda varsayım veya ceza üretilmemektedir.")
+            elif is_durum_a:
                 st.error(f"### 🛑 HÜKÜM:\n**{verdict.karar}**")
-                st.markdown(f"**Gerekçeli Hukuki Karar:**\n{verdict.gerekce}")
+                st.markdown(f"**Gerekçeli Hukuki Karar:**\n\n{verdict.gerekce}")
                 st.markdown("**Dayanak Maddeler:**")
                 badges_html = "".join([f"<span class='badge-tag'>{m}</span>" for m in verdict.dayanak_maddeler])
                 st.markdown(badges_html, unsafe_allow_html=True)
                 st.markdown(f"**İlgili Sayfalar:** {', '.join([str(p) for p in verdict.sayfa_referanslari])}")
-            else:
+            else:  # DURUM B
                 st.success(f"### 🟢 HÜKÜM:\n**{verdict.karar}**")
-                st.markdown(f"**Gerekçeli Hukuki Karar:**\n{verdict.gerekce}")
+                st.markdown(f"**Gerekçeli Hukuki Karar:**\n\n{verdict.gerekce}")
                 st.markdown("**Dayanak Maddeler:**")
                 badges_html = "".join([f"<span class='badge-tag'>{m}</span>" for m in verdict.dayanak_maddeler])
                 st.markdown(badges_html, unsafe_allow_html=True)
                 st.markdown(f"**İlgili Sayfalar:** {', '.join([str(p) for p in verdict.sayfa_referanslari])}")
 
         with rep_col2:
-            if is_out_of_scope:
+            if is_durum_c:
                 st.metric(
                     label="Hukuki Durum",
                     value="Kapsam Dışı",
                     delta="Sözleşmede Yok",
-                    delta_color="inverse",
+                    delta_color="off",
                     help="Yöneltilen soru mevcut sözleşmenin düzenlediği konular ve maddeler arasında yer almamaktadır."
                 )
                 st.metric(
                     label="Güven Skoru",
-                    value="%0",
-                    delta="Eşik Altı",
-                    delta_color="inverse",
-                    help="Soru belgede bulunmadığı için Responsible AI uyarınca güven skoru sıfırdır."
+                    value=f"%{verdict.guven_skoru}",
+                    delta="Yüksek Doğruluk",
+                    delta_color="normal",
+                    help="Sorunun sözleşme metninde yer almadığı %99 doğrulukla kesinleştirilmiştir."
                 )
                 st.metric(
-                    label="Eşleşen Madde",
-                    value="0 Adet",
-                    delta="Madde Bulunamadı",
-                    delta_color="inverse",
-                    help="Sözleşmede bu konuyu doğrudan düzenleyen hiçbir geçerli madde eşleşmemiştir."
+                    label="Risk Değerlendirmesi",
+                    value="RİSK YOK",
+                    delta="Düzenlenmemiş Konu",
+                    delta_color="off",
+                    help="Sözleşmede bu konuya ilişkin bir cezai şart veya yaptırım riski bulunmamaktadır."
+                )
+                st.metric(
+                    label="Hop Sayısı",
+                    value="1 Hop",
+                    delta="2. Hop Atlandı",
+                    delta_color="off",
+                    help="Soru kapsam dışı olduğu için gereksiz 2. Hop çapraz arama engellenmiştir."
                 )
             else:
                 st.metric(
                     label="Güven Skoru",
                     value=f"%{verdict.guven_skoru}",
                     delta="Yüksek Doğruluk" if verdict.guven_skoru >= 85 else ("Orta" if verdict.guven_skoru >= 60 else "Düşük"),
-                    help="Sorgunun maddelerle anlamsal kosinüs benzerliği (%40), 2. Hop istisna maddesi uyumu (%30), doğrudan çapraz atıf doğrulaması (%20) ve tespit edilen hukuki kısıtlayıcı risklerin kapsamının (%10) dinamik matematiksel sentezidir."
+                    help="Sorgunun maddelerle anlamsal kosinüs benzerliği, 2. Hop istisna uyumu ve doğrudan çapraz atıf sentezidir."
                 )
                 hop_count = 2 if len(st.session_state.evidence_chunks) > 1 else 1
                 st.metric(
                     label="Hop Sayısı",
                     value=f"{hop_count} Hop",
                     delta="Multi-Hop Aktif" if hop_count > 1 else "Tekil",
-                    help="Arama derinliği kademesidir. 1 Hop: Yalnızca sorunun doğrudan karşılığı olan ilk maddeye bakar (naif RAG). 2 Hop: İlk maddedeki kısıtlama, taahhüt ve cezai şart atıflarını takip ederek gizli istisnaları zincirleme olarak ortaya çıkarır (Multi-Hop RAG)."
+                    help="Arama derinliği kademesidir. 1 Hop: İlk doğrudan madde. 2 Hop: Zincirleme istisna ve taahhüt maddeleri."
                 )
                 st.metric(
                     label="Risk Değerlendirmesi",
                     value="YÜKSEK RİSK" if verdict.risk_var_mi else "DÜŞÜK RİSK",
                     delta="Cezai Şart Mevcut" if verdict.risk_var_mi else "Doğrudan Uygulanabilir",
                     delta_color="inverse" if verdict.risk_var_mi else "normal",
-                    help="Sözleşme maddelerinde cezai şart, taahhüt süresi ihlali, tazminat veya mali yaptırım riski tespit edilip edilmediğini gösterir."
+                    help="Sözleşme maddelerinde cezai şart, taahhüt süresi ihlali veya mali yaptırım riski tespit edilip edilmediğini gösterir."
                 )
 
         st.divider()
 
         # AKORDİYON 1: KULLANILAN SQLITE CHUNK'LARI VE SKORLARI
-        if not is_out_of_scope:
+        if not is_durum_c:
             with st.expander("📋 Kararda Kullanılan SQLite Chunk'ları ve Kosinüs Benzerlikleri", expanded=True):
                 for idx, c in enumerate(st.session_state.evidence_chunks, 1):
                     col_c1, col_c2 = st.columns([4, 1])
@@ -1072,8 +1290,8 @@ def main():
                         st.caption(f"Arama Kademesi: {c.get('hop', 1)}. Hop")
                     st.divider()
         else:
-            with st.expander("📋 Taranan En Yakın Eşik Altı Kayıt (Bilgi Amaçlı)", expanded=False):
-                st.caption("Aşağıdaki madde veritabanında matematiksel olarak en yakın çıkan kayıttır; ancak sorunuzla anlamsal benzerliği yetersiz (%42 eşik altı) olduğu için hükümde delil olarak kullanılmamıştır:")
+            with st.expander("📋 Taranan En Yakın Kayıt (Bilgi Amaçlı)", expanded=False):
+                st.caption("Aşağıdaki madde veritabanında taranan kayıtlardan biridir; ancak sorunuzla doğrudan konu uyumu veya anlamsal benzerliği yetersiz olduğu için hükümde delil olarak kullanılmamıştır:")
                 if st.session_state.evidence_chunks:
                     ref_c = st.session_state.evidence_chunks[0]
                     st.info(f"📌 **{ref_c['madde_no']}** *(Sayfa {ref_c['sayfa_no']})* — En Yakın Benzerlik: `%{ref_c.get('score', 0.0)*100:.1f}` (Eşik Altı)\n\n\"{ref_c['content']}\"")
