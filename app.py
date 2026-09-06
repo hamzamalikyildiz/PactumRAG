@@ -330,8 +330,11 @@ def fetch_all_chunks() -> List[Dict[str, Any]]:
 
 def load_demo_data(engine: FoundryLocalEmbeddingEngine) -> int:
     """
-    Mod A: Spesifikasyonda belirtilen 3 maddelik tuzak demo sözleşmesini yükler.
-    Tuzak: Madde 4.1 tek başına cezasız fesih vadederken, Madde 8.2 taahhüt ve cezai şart bağlar.
+    Mod A: Spesifikasyonda belirtilen ve tüm senaryoları (Durum A, B, C) kapsayan demo sözleşmesini yükler:
+    - Madde 4.1: 30 gün önceden bildirimli fesih hakkı
+    - Madde 8.2: 12 aylık taahhüt süresi ve cezai şart (Tuzak senaryo)
+    - Madde 7.1: Yazılı bildirim ve tebligat usulü (Doğrudan uygulanabilir hak)
+    - Madde 12.0: İstanbul mahkemeleri yetki kuralı
     """
     clear_database()
     demo_clauses = [
@@ -344,6 +347,11 @@ def load_demo_data(engine: FoundryLocalEmbeddingEngine) -> int:
             "Madde 8.2",
             2,
             "İşbu sözleşme 12 aylık taahhüt süresine tabidir. Madde 4.1 uyarınca yapılacak fesihlerde, kalan ayların ücreti ve sağlanan indirimler cezai şart olarak faturalandırılır."
+        ),
+        (
+            "Madde 7.1",
+            2,
+            "Sözleşmeye ilişkin tüm bildirim ve tebligatlar tarafların sözleşmede belirtilen yazılı adreslerine veya kayıtlı e-posta adreslerine yapılır. Bildirim süresi tebliğ tarihinden itibaren başlar."
         ),
         (
             "Madde 12.0",
@@ -1094,16 +1102,36 @@ def main():
         </div>
     """, unsafe_allow_html=True)
 
-    # TUZAK DEMO TETİKLEME BUTONU (MOD A)
-    demo_col1, demo_col2 = st.columns([2, 1])
-    with demo_col1:
-        run_demo_button = st.button(
-            "🚀 2 Dk'lık Tuzak Demoyu Çalıştır (3. Ayda Fesih)",
+    # --------------------------------------------------------------------------
+    # HIZLI SENARYO TESTİ (TÜM DURUMLAR: DURUM A, DURUM B, DURUM C)
+    # --------------------------------------------------------------------------
+    st.markdown("#### 🎯 Hızlı Senaryo Denetimi (Tek Tıkla Tüm Durumları Test Edin)")
+    col_s1, col_s2, col_s3 = st.columns(3)
+
+    with col_s1:
+        run_demo_s1 = st.button(
+            "🔴 Senaryo A: Tuzak Fesih\n(Cezai Şart Riski)",
             type="primary",
-            use_container_width=True
+            use_container_width=True,
+            help="Madde 4.1 fesih hakkı vadeder; fakat Madde 8.2 taahhüdü kalan ayları cezai şart olarak yansıtır."
         )
-    with demo_col2:
-        st.caption("💡 **Tuzak Senaryo:** Madde 4.1 cezasız fesih gibi görünür; ancak Madde 8.2'deki 12 aylık taahhüt cezai şart doğurur.")
+        st.caption("💡 **Tuzak Fesih:** Madde 4.1 serbest fesih gibi görünür; ancak 12 aylık taahhüt cezası doğar.")
+
+    with col_s2:
+        run_demo_s2 = st.button(
+            "🟢 Senaryo B: Doğrudan Hak\n(Usule Uygun / Cezasız)",
+            use_container_width=True,
+            help="Madde 7.1 uyarınca yazılı/e-posta bildirim usulü doğrudan uygulanabilir; ek cezai engel yoktur."
+        )
+        st.caption("💡 **Doğrudan Hak:** Sözleşmede usulü düzenlenen ve cezai şarta bağlanmayan hak sorgulanır.")
+
+    with col_s3:
+        run_demo_s3 = st.button(
+            "🟡 Senaryo C: Sorumlu AI\n(Kapsam Dışı / Çekimser)",
+            use_container_width=True,
+            help="Sözleşmede 'geçici dondurma' yoktur; sistem cezai şart uydurmaz, %99 güvenle çekimser kalır."
+        )
+        st.caption("💡 **Halüsinasyon Engeli:** Belgede geçmeyen hat dondurma sorulur; çekimser kalınır.")
 
     st.divider()
 
@@ -1123,14 +1151,23 @@ def main():
     # Denetim Tetikleme Mantığı
     trigger_question = None
     is_preset_demo = False
-    if run_demo_button:
+
+    if run_demo_s1:
         load_demo_data(engine)
         trigger_question = "Müşteri sözleşmenin 3. ayında 30 gün önceden bildirerek cezasız fesih yapabilir mi?"
         is_preset_demo = True
+    elif run_demo_s2:
+        load_demo_data(engine)
+        trigger_question = "Sözleşmeye ilişkin tüm tebligat ve yazılı bildirimler hangi usulle yapılmalıdır?"
+        is_preset_demo = False
+    elif run_demo_s3:
+        load_demo_data(engine)
+        trigger_question = "Aboneliğimi 1 yıl içinde en fazla kaç ay süreyle geçici olarak dondurabilirim?"
+        is_preset_demo = False
     elif submit_query_button and user_question.strip():
         chunks_check = fetch_all_chunks()
         if not chunks_check:
-            st.warning("⚠️ Lütfen önce sol menüden bir PDF yükleyin veya 'Varsayılan Demo Verisini Yükle' butonuna basın.")
+            st.warning("⚠️ Lütfen önce sol menüden bir PDF yükleyin veya yukarıdaki hazır senaryolardan birine basın.")
         else:
             trigger_question = user_question.strip()
             is_preset_demo = False
