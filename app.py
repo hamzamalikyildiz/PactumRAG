@@ -282,38 +282,52 @@ def parse_and_index_pdf(uploaded_file, engine: FoundryLocalEmbeddingEngine) -> i
         return 0
 
     clear_database()
+    try:
+        uploaded_file.seek(0)
+    except Exception:
+        pass
+
     pdf_reader = PdfReader(io.BytesIO(uploaded_file.read()))
     total_indexed = 0
 
     madde_regex = re.compile(
-        r"(Madde\s+\d+(\.\d+)?|Article\s+\d+(\.\d+)?|[0-9]+\.\s+[A-ZÇĞİÖŞÜa-zçğıöşü\s]{3,30}:)",
+        r"(?:(?:Madde|Article|Bölüm|Kısım)\s+\d+(?:\.\d+)*|\b\d+\.\s+[A-ZÇĞİÖŞÜa-zçğıöşü\s]{3,35}:)",
         re.IGNORECASE
     )
 
     for page_idx, page in enumerate(pdf_reader.pages):
         page_no = page_idx + 1
         text = page.extract_text() or ""
-        if not text.strip():
+        text = text.strip()
+        if not text:
             continue
 
-        splits = madde_regex.split(text)
-        if len(splits) > 1:
-            i = 1
-            while i < len(splits):
-                madde_title = splits[i].strip() if splits[i] else f"Bölüm {page_no}"
-                content_body = splits[i+1].strip() if (i+1) < len(splits) else ""
+        matches = list(madde_regex.finditer(text))
+        if matches:
+            first_start = matches[0].start()
+            if first_start > 30:
+                preamble = text[:first_start].strip()
+                if len(preamble) > 15:
+                    emb = engine.get_embedding(preamble)
+                    insert_chunk(f"Giriş (Sayfa {page_no})", page_no, preamble, emb)
+                    total_indexed += 1
+
+            for idx, m in enumerate(matches):
+                madde_title = m.group(0).strip()
+                start_body = m.end()
+                end_body = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+                content_body = text[start_body:end_body].strip()
                 full_content = f"{madde_title}: {content_body}" if content_body else madde_title
-                
+
                 if len(full_content) > 15:
                     emb = engine.get_embedding(full_content)
                     insert_chunk(madde_title, page_no, full_content, emb)
                     total_indexed += 1
-                i += 2
         else:
             paragraphs = [p.strip() for p in text.split("\n\n") if len(p.strip()) > 20]
             if not paragraphs:
                 paragraphs = [p.strip() for p in text.split("\n") if len(p.strip()) > 30]
-            
+
             for p_idx, para in enumerate(paragraphs):
                 madde_title = f"Paragraf {page_no}.{p_idx+1}"
                 emb = engine.get_embedding(para)
