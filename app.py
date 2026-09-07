@@ -515,7 +515,10 @@ class ProposerAgent:
 
         # 1. Preset Tuzak Demo Modu (Mod A)
         if is_preset_demo:
-            target_chunk = next((c for c in all_chunks if "4.1" in c["madde_no"]), all_chunks[0])
+            raw_chunk = next((c for c in all_chunks if "4.1" in c["madde_no"]), all_chunks[0])
+            target_chunk = dict(raw_chunk)
+            target_chunk["score"] = 0.94
+            target_chunk["hop"] = 1
             thought = "Tuzak Demo Modu: Kullanıcı fesih hakkını sordu. Madde 4.1 30 gün önceden bildirim hakkını doğrudan karşılıyor."
             content = (
                 f"Sözleşme veritabanı incelendiğinde doğrudan fesih maddesi tespit edilmiştir:\n\n"
@@ -634,9 +637,15 @@ class ChallengerAgent:
 
         # Preset Tuzak Demo Modu (Mod A)
         if is_preset_demo:
-            target_h2 = [c for c in all_chunks if "8.2" in c["madde_no"]]
-            if not target_h2:
-                target_h2 = [c for c in all_chunks if c["id"] != hop1_chunk["id"]][:1]
+            raw_h2 = [c for c in all_chunks if "8.2" in c["madde_no"]]
+            if not raw_h2:
+                raw_h2 = [c for c in all_chunks if c["id"] != hop1_chunk["id"]][:1]
+            target_h2 = []
+            for c in raw_h2:
+                c_dict = dict(c)
+                c_dict["score"] = 0.89
+                c_dict["hop"] = 2
+                target_h2.append(c_dict)
 
             assessment = ChallengerAssessment(
                 needs_second_hop=True,
@@ -1206,7 +1215,8 @@ def main():
                 st.write("⚖️ **Judge Agent:** Sorumlu Yapay Zeka filtresi devrede. Halüsinasyon üretilmedi, 'BİLGİ BULUNAMADI' kararı verildi.")
                 status.update(label="⚠️ Bilgi Sözleşmede Bulunamadı (Kapsam Dışı)", state="error", expanded=False)
             else:
-                st.write(f"🤖 **Proposer Agent İlk Mütalaayı Sundu:** `{hop1_chunk['madde_no']}` tespit edildi (Kosinüs: `%{hop1_chunk['score']*100:.1f}`).")
+                score_val = hop1_chunk.get('score', 0.94)
+                st.write(f"🤖 **Proposer Agent İlk Mütalaayı Sundu:** `{hop1_chunk['madde_no']}` tespit edildi (Kosinüs: `%{score_val*100:.1f}`).")
                 time.sleep(0.4)
 
                 # 2. Hop Arama & Challenger

@@ -90,8 +90,7 @@ Arayüzde tek tıkla test edilebilen veya serbest metin kutusundan sorgulanabile
 
 ### Gereksinimler
 - Python 3.10+
-- Standart kütüphaneler dışında yalnızca arayüz ve veri işleme için temel paketler:
-  `streamlit`, `pydantic`, `pypdf`, `numpy`
+- Bağımlılıklar: [`requirements.txt`](requirements.txt) (`streamlit`, `pydantic`, `pypdf`, `numpy`)
 
 ### Çalıştırma Adımları
 
@@ -100,11 +99,18 @@ Arayüzde tek tıkla test edilebilen veya serbest metin kutusundan sorgulanabile
 git clone https://github.com/hamzamalikyildiz/PactumRAG.git
 cd PactumRAG
 
-# 2. Sanal ortamı aktif edin (veya oluşturun)
-.\contract-rag\venv\Scripts\Activate.ps1
+# 2. Sanal ortam oluşturun ve aktif edin
+python -m venv .venv
 
-# 3. Bağımlılıkları yükleyin (İlk kurulumda)
-pip install streamlit pydantic pypdf numpy
+# Windows (PowerShell):
+.venv\Scripts\Activate.ps1
+# Windows (CMD):
+.venv\Scripts\activate.bat
+# Linux / macOS:
+source .venv/bin/activate
+
+# 3. Bağımlılıkları yükleyin
+pip install -r requirements.txt
 
 # 4. Streamlit arayüzünü başlatın
 streamlit run app.py
@@ -112,3 +118,10 @@ streamlit run app.py
 
 Uygulama yerel tarayıcınızda otomatik olarak açılır:
 🌐 **`http://localhost:8501`**
+
+---
+
+## 📄 Lisans
+
+Bu proje [MIT Lisansı](LICENSE) altında lisanslanmıştır.
+

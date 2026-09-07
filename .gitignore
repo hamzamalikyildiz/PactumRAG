@@ -16,6 +16,12 @@ __pycache__/
 documents.db
 *.db-journal
 
+# Environment Variables & Secrets
+.env
+.env.*
+*.env
+.streamlit/secrets.toml
+
 # OS Specific
 .DS_Store
 Thumbs.db
